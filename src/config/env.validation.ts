@@ -152,6 +152,9 @@ export function validateEnv(config: EnvConfig): EnvConfig {
     'HEADERS_TIMEOUT_MS',
     'KEEPALIVE_TIMEOUT_MS',
     'WEBHOOK_DISPATCH_CONCURRENCY',
+    'WATCHDOG_INTERVAL_MS',
+    'WATCHDOG_PROBE_TIMEOUT_MS',
+    'WATCHDOG_MAX_FAILURES',
   ]) {
     checkPositiveInt(key);
   }

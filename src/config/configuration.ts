@@ -128,6 +128,19 @@ export default () => ({
     maxConcurrent: parseInt(process.env.MAX_CONCURRENT_SESSIONS || '0', 10),
   },
 
+  // Session liveness watchdog. Probes each READY engine periodically; consecutive failures
+  // route the session through the disconnect+reconnect path. Tune for unstable networks
+  // (e.g. Render free tier) by raising MAX_FAILURES or INTERVAL.
+  watchdog: {
+    // How often (ms) to probe each READY engine. Default 60 000 (1 min).
+    intervalMs: parseInt(process.env.WATCHDOG_INTERVAL_MS || '60000', 10),
+    // Max ms a single probe may take before being counted as a failure. Default 15 000 (15 s).
+    probeTimeoutMs: parseInt(process.env.WATCHDOG_PROBE_TIMEOUT_MS || '15000', 10),
+    // Consecutive probe failures before the session is treated as disconnected. Default 2.
+    // Raise to 3–5 for unstable networks to avoid false disconnects.
+    maxFailures: parseInt(process.env.WATCHDOG_MAX_FAILURES || '2', 10),
+  },
+
   // Webhook configuration
   webhook: {
     timeout: parseInt(process.env.WEBHOOK_TIMEOUT || '10000', 10),

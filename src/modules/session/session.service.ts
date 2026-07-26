@@ -107,6 +107,9 @@ const RECONNECT_LOOP_ALERT_INTERVAL_ATTEMPTS = 5;
  * `probeLiveness`, raced against TIMEOUT); MAX_FAILURES consecutive failures route the session
  * through the exact engine-disconnect path.
  */
+/** Default watchdog constants — exported for tests and external consumers. Runtime values are resolved
+ *  from config (watchdog.intervalMs / watchdog.probeTimeoutMs / watchdog.maxFailures) with these as
+ *  fallbacks. */
 export const SESSION_WATCHDOG_INTERVAL_MS = 60_000;
 export const SESSION_WATCHDOG_PROBE_TIMEOUT_MS = 15_000;
 export const SESSION_WATCHDOG_MAX_FAILURES = 2;
@@ -1792,13 +1795,32 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     this.scheduleReconnect(id, session);
   }
 
+  /** Resolve watchdog tuning from configService with safe fallbacks to the hardcoded defaults. */
+  private resolveWatchdogConfig(): {
+    intervalMs: number;
+    probeTimeoutMs: number;
+    maxFailures: number;
+  } {
+    const raw = this.configService?.get<{
+      intervalMs?: number;
+      probeTimeoutMs?: number;
+      maxFailures?: number;
+    }>('watchdog');
+    return {
+      intervalMs: Number.isFinite(raw?.intervalMs) ? raw!.intervalMs! : SESSION_WATCHDOG_INTERVAL_MS,
+      probeTimeoutMs: Number.isFinite(raw?.probeTimeoutMs) ? raw!.probeTimeoutMs! : SESSION_WATCHDOG_PROBE_TIMEOUT_MS,
+      maxFailures: Number.isFinite(raw?.maxFailures) ? raw!.maxFailures! : SESSION_WATCHDOG_MAX_FAILURES,
+    };
+  }
+
   /** Start the liveness watchdog (idempotent). One unref'd interval probes every registered engine. */
   private startWatchdog(): void {
     if (this.watchdogTimer) return;
+    const { intervalMs } = this.resolveWatchdogConfig();
     this.watchdogTimer = setInterval(() => {
       // allSettled inside the tick keeps a failing session from ever throwing into the timer.
       void this.runWatchdogTick();
-    }, SESSION_WATCHDOG_INTERVAL_MS);
+    }, intervalMs);
     // The watchdog must never keep the process alive on its own.
     this.watchdogTimer.unref();
   }
@@ -1830,6 +1852,8 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
       return;
     }
 
+    const { probeTimeoutMs, maxFailures } = this.resolveWatchdogConfig();
+
     // A wedged connection can hang the probe itself, so race it against a timeout; a timeout or a
     // probe error both count as "not proven alive".
     let alive: boolean;
@@ -1840,7 +1864,7 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         new Promise<never>((_, reject) => {
           probeTimer = setTimeout(
             () => reject(new Error('liveness probe timed out')),
-            SESSION_WATCHDOG_PROBE_TIMEOUT_MS,
+            probeTimeoutMs,
           );
         }),
       ]);
@@ -1862,11 +1886,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
     }
 
     const failures = (this.livenessFailures.get(id) ?? 0) + 1;
-    if (failures < SESSION_WATCHDOG_MAX_FAILURES) {
+    if (failures < maxFailures) {
       this.livenessFailures.set(id, failures);
       this.logger.warn('Liveness probe failed; will treat the session as dead after repeated failures', {
         sessionId: id,
         failures,
+        maxFailures,
         action: 'watchdog_probe_failed',
       });
       return;
