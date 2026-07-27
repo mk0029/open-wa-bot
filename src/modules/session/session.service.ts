@@ -2359,6 +2359,41 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   /**
+   * Iterate every in-memory engine and perform a lightweight liveness touch.
+   * Returns a summary the caller (e.g. keep-alive HTTP endpoint) can log or return.
+   */
+  async keepAliveAll(): Promise<{
+    total: number;
+    alive: number;
+    sessions: { id: string; name: string; status: string; phone: string | null; alive: boolean }[];
+  }> {
+    const results: { id: string; name: string; status: string; phone: string | null; alive: boolean }[] = [];
+    const entries = [...this.engines];
+    await Promise.allSettled(
+      entries.map(async ([id, engine]) => {
+        const status = engine.getStatus();
+        const phone = engine.getPhoneNumber();
+        let alive = status === EngineStatus.READY;
+        if (alive && typeof engine.probeLiveness === 'function') {
+          try {
+            alive = await Promise.race([
+              engine.probeLiveness(),
+              new Promise<boolean>((_, reject) => {
+                setTimeout(() => reject(new Error('probe timeout')), 10_000);
+              }),
+            ]);
+          } catch {
+            alive = false;
+          }
+        }
+        const session = await this.sessionRepository.findOne({ where: { id } });
+        results.push({ id, name: session?.name ?? 'unknown', status, phone, alive });
+      }),
+    );
+    return { total: results.length, alive: results.filter((r) => r.alive).length, sessions: results };
+  }
+
+  /**
    * Get count of currently active (running) sessions
    */
   getActiveCount(): number {
