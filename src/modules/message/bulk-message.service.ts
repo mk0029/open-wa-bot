@@ -141,8 +141,8 @@ export class BulkMessageService implements OnApplicationBootstrap {
     if (maxConcurrentBatches > 0 && this.inFlightBatches >= maxConcurrentBatches) {
       throw new BadRequestException(`Too many bulk batches in progress (max ${maxConcurrentBatches}); retry shortly`);
     }
-    const options = {
-      delayBetweenMessages: dto.options?.delayBetweenMessages ?? 3000,
+  const options = {
+    delayBetweenMessages: dto.options?.delayBetweenMessages ?? 15000,
       randomizeDelay: dto.options?.randomizeDelay ?? true,
       stopOnError: dto.options?.stopOnError ?? false,
     };
@@ -520,7 +520,7 @@ export class BulkMessageService implements OnApplicationBootstrap {
   private calculateDelay(options: { delayBetweenMessages: number; randomizeDelay: boolean }): number {
     let delay = options.delayBetweenMessages;
     if (options.randomizeDelay) {
-      delay += Math.random() * 2000; // Add 0-2 seconds random
+      delay += Math.random() * 15000; // 0-15s random jitter (10-30s total with default)
     }
     return delay;
   }

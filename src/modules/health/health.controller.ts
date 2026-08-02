@@ -37,11 +37,28 @@ export class HealthController {
   @Get()
   @ApiOperation({ summary: 'Basic health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy' })
-  check(): { status: string; timestamp: string; version: string } {
+  check(): {
+    status: string;
+    timestamp: string;
+    version: string;
+    process?: {
+      uptimeSec: number;
+      memoryRssMb: number;
+      memoryHeapUsedMb: number;
+      pid: number;
+    };
+  } {
+    const mem = process.memoryUsage();
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
       version: APP_VERSION,
+      process: {
+        uptimeSec: Math.round(process.uptime()),
+        memoryRssMb: Math.round((mem.rss / 1024 / 1024) * 10) / 10,
+        memoryHeapUsedMb: Math.round((mem.heapUsed / 1024 / 1024) * 10) / 10,
+        pid: process.pid,
+      },
     };
   }
 

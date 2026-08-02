@@ -14,10 +14,12 @@ import { TemplateService } from '../template/template.service';
 import { renderTemplate } from '../../common/utils/template-render';
 import { createLogger } from '../../common/services/logger.service';
 import { SsrfBlockedError, SSRF_BLOCKED_CLIENT_MESSAGE } from '../../common/security/ssrf-guard';
-import { userPart } from '../../engine/identity/wa-id';
+import { parseWaId, userPart } from '../../engine/identity/wa-id';
 import { resolveFeatureFlags } from '../../config/feature-flags';
 import { LidMappingStoreService } from '../../engine/identity/lid-mapping-store.service';
 import { isUniqueConstraintError } from '../../common/utils/unique-constraint.util';
+import { WhatsAppDeliveryError } from '../../common/errors/whatsapp-delivery.error';
+import { classifySendError } from './send-error-classifier';
 
 export interface GetMessagesOptions {
   chatId?: string;
@@ -61,6 +63,13 @@ export class MessageService {
     const finalDto = await this.applySendingGate(sessionId, 'text', dto);
 
     const engine = this.getEngine(sessionId);
+
+    // Always resolve the recipient against the live client before the first send to
+    // (a) fail fast with a clear reason when the number is not on WhatsApp, and
+    // (b) let WhatsApp assign/carry the chat for brand-new or long-inactive contacts.
+    // Probing is gated on PROBE_REGISTRATION_BEFORE_SEND (default ON) and only applies
+    // to phone-addressed 1:1 chats (@c.us / @s.whatsapp.net), never groups or lids.
+    await this.probeRecipientRegistration(engine, finalDto.chatId);
 
     // Save message as pending BEFORE sending
     const message = await this.saveOutgoingMessage(sessionId, {
@@ -133,6 +142,46 @@ export class MessageService {
       { sessionId, source: 'MessageService' },
     );
     throw this.toClientFacingError(error);
+  }
+
+  /**
+   * Probe whether a phone-addressed 1:1 recipient is registered on WhatsApp before sending.
+   *
+   * - Skips groups (`@g.us`), lid-only (`@lid`) and status/broadcast jids — the probe only makes
+   *   sense for phone user jids (`@c.us` / `@s.whatsapp.net`).
+   * - Gate: `PROBE_REGISTRATION_BEFORE_SEND=false` disables the extra round-trip (default ON).
+   * - A probe failure (engine down, network blip) is *not* a recipient verdict — the send proceeds
+   *   and the engine decides, so a transient probe error can never silently drop a reminder.
+   * - When the probe authoritatively says "not registered", fail fast with a permanent, structured
+   *   error so queueing clients mark `failed` and do not retry indefinitely.
+   */
+  private async probeRecipientRegistration(engine: IWhatsAppEngine, chatId: string): Promise<void> {
+    const kind = parseWaId(chatId).kind;
+    if (kind !== 'user') return;
+    if (this.probeRegistrationEnabled() === false) return;
+
+    try {
+      const exists = await engine.checkNumberExists(userPart(chatId));
+      if (!exists) {
+        throw new WhatsAppDeliveryError({
+          errorCode: 'NUMBER_NOT_ON_WHATSAPP',
+          message: `Number ${userPart(chatId)} is not on WhatsApp. Delivery failed.`,
+          retryable: false,
+          status: 422,
+        });
+      }
+    } catch (error) {
+      if (error instanceof WhatsAppDeliveryError) throw error;
+      // Probe itself failed (client down/timeout) — do not block the send on a best-effort probe.
+      this.logger.warn(`Registration probe failed for ${chatId}; proceeding with send`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private probeRegistrationEnabled(): boolean {
+    // Opt-out gate: PROBE_REGISTRATION_BEFORE_SEND=false disables the extra onWhatsApp round-trip.
+    return process.env.PROBE_REGISTRATION_BEFORE_SEND !== 'false';
   }
 
   /**
@@ -714,14 +763,28 @@ export class MessageService {
    * Map a blocked outbound media fetch (SSRF guard) to an HTTP 400 so a
    * caller-supplied internal/unsafe URL returns a client error instead of a 500.
    * The raw guard message names the resolved internal IP (a recon/DNS-rebind oracle), so return a
-   * generic message to the client and keep the detail in the server log only. Others pass through.
+   * generic message to the client and keep the detail in the server log only. Others pass through
+   * the structured delivery-error classifier so API callers always receive `errorCode` +
+   * `retryable` — never an opaque, unretryable-feeling 500.
    */
   private toClientFacingError(error: unknown): unknown {
     if (error instanceof SsrfBlockedError) {
       this.logger.warn(`Outbound media fetch blocked by SSRF guard: ${error.message}`);
       return new BadRequestException(SSRF_BLOCKED_CLIENT_MESSAGE);
     }
-    return error;
+    if (error instanceof WhatsAppDeliveryError) {
+      return error;
+    }
+    const classified = classifySendError(error);
+    if (classified.errorCode === 'INVALID_CHAT_ID' && !(error instanceof BadRequestException)) {
+      // Only trust engine BadRequestExceptions as invalid-chat verdicts; anything else with a 4xx
+      // shape that reached here keeps its own error code (e.g. a 401 auth rejection).
+      return new WhatsAppDeliveryError({ ...classified, retryable: false });
+    }
+    this.logger.warn(`Classified send failure as ${classified.errorCode} (retryable=${classified.retryable})`, {
+      error: classified.message,
+    });
+    return new WhatsAppDeliveryError(classified);
   }
 
   private buildMediaInput(dto: SendMediaMessageDto): MediaInput {

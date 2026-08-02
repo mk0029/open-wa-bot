@@ -409,7 +409,7 @@ export class MessageController {
     @Body() dto: SendBulkMessageDto,
   ): Promise<BulkMessageResponseDto> {
     const batch = await this.bulkMessageService.createBatch(sessionId, dto);
-    const estimatedTime = new Date(Date.now() + batch.messages.length * (batch.options?.delayBetweenMessages || 3000));
+    const estimatedTime = new Date(Date.now() + batch.messages.length * (batch.options?.delayBetweenMessages || 15000));
 
     return {
       batchId: batch.batchId,
