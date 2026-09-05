@@ -12,6 +12,7 @@ import { validateEnv } from './config/env.validation';
 import { SessionModule } from './modules/session/session.module';
 import { MessageModule } from './modules/message/message.module';
 import { TemplateModule } from './modules/template/template.module';
+import { NotificationEngineModule } from './modules/notification-engine/notification-engine.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -273,6 +274,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
     SessionModule,
     MessageModule,
     TemplateModule,
+    NotificationEngineModule,
     WebhookModule,
     HealthModule,
     SettingsModule,
